@@ -22,10 +22,13 @@
 #include "glext.h"
 #include "wglext.h"
 
-#define print_log(fmt, ...) do { printf(sizeof("" fmt "") > 0 ? (fmt) : "", __VA_ARGS__); fflush(stdout); } while (0);
+// There's some Assert()s on expressions with side-effects on purpose
+#define Assert(...) do { if (!(__VA_ARGS__)) { printf("Assert FAIL:\n    \"" #__VA_ARGS__ "\"\n\n"); __debugbreak(); } } while (0);
 
-#undef assert
-#define assert(...) do { if (!(__VA_ARGS__)) { print_log("ASSERT FAIL:\n    \"" #__VA_ARGS__ "\"\n\n"); __debugbreak(); } } while (0);
+extern "C" {
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+    __declspec(dllexport) DWORD NvOptimusEnablement = 1;
+}
 
 #include <stdlib.h> // @Remove
 #include <math.h> // @Remove
@@ -51,44 +54,36 @@ bool must_succeed_(HRESULT hr) {
     }
     return true;
 }
-#define must_succeed(e) assert(must_succeed_(e))
-static double invfreq = 0;
-static double get_time() {
-    LARGE_INTEGER li = {0};
-    if (!invfreq) {
-        QueryPerformanceFrequency(&li);
-        invfreq = 1.0 / li.QuadPart;
-    }
-    QueryPerformanceCounter(&li);
-    return li.QuadPart * invfreq;
-}
-#define time(stmt) do { double time = -get_time(); { stmt; } time += get_time(); print_log("" #stmt " took %f ms\n", time * 1000); } while (0)
-// #define must_succeed(e) time(assert(must_succeed_(e)))
+#define must_succeed(e) Assert(must_succeed_(e))
 static void APIENTRY DebugCallback(GLenum source, GLenum type, GLuint id,
     GLenum severity, GLsizei length, const GLchar *message, const void *userParam)
 {
-    print_log("GL Debug: %s\n", message);
+    printf("GL Debug: %s\n", message);
     if (/*severity == GL_DEBUG_SEVERITY_MEDIUM ||*/ severity == GL_DEBUG_SEVERITY_HIGH) {
         fflush(stdout);
-        assert(0);
+        Assert(0);
     }
 }
 static bool gl_success() {
+#ifdef NDEBUG
+    return true;
+#else
     bool success = true;
     while (int err = glGetError()) {
         success = false;
-        print_log("glGetError(): ");
+        printf("glGetError(): ");
         switch (err) {
-        case GL_INVALID_ENUM:      print_log("GL_INVALID_ENUM");      break;
-        case GL_INVALID_VALUE:     print_log("GL_INVALID_VALUE");     break;
-        case GL_INVALID_OPERATION: print_log("GL_INVALID_OPERATION"); break;
-        case GL_STACK_OVERFLOW:    print_log("GL_STACK_OVERFLOW");    break;
-        case GL_STACK_UNDERFLOW:   print_log("GL_STACK_UNDERFLOW");   break;
-        case GL_OUT_OF_MEMORY:     print_log("GL_OUT_OF_MEMORY");     break;
+        case GL_INVALID_ENUM:      printf("GL_INVALID_ENUM");      break;
+        case GL_INVALID_VALUE:     printf("GL_INVALID_VALUE");     break;
+        case GL_INVALID_OPERATION: printf("GL_INVALID_OPERATION"); break;
+        case GL_STACK_OVERFLOW:    printf("GL_STACK_OVERFLOW");    break;
+        case GL_STACK_UNDERFLOW:   printf("GL_STACK_UNDERFLOW");   break;
+        case GL_OUT_OF_MEMORY:     printf("GL_OUT_OF_MEMORY");     break;
         }
-        print_log("\n");
+        printf("\n");
     }
     return success;
+#endif
 }
 
 static void rgba_to_clipboard(void *data, int w, int h) {
@@ -130,7 +125,7 @@ int main() {
     wc.hCursor = LoadCursorA(nullptr, IDC_ARROW);
 
     ATOM atom = RegisterClassA(&wc);
-    assert(atom);
+    Assert(atom);
 
     HWND hwnd = CreateWindowA(wc.lpszClassName, "DXGL",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -140,11 +135,11 @@ int main() {
         auto temp = CreateWindowA("STATIC", "temp", 0,
             CW_USEDEFAULT, CW_USEDEFAULT, 640/2, 480/2,
             nullptr, nullptr, nullptr, nullptr);
-        assert(temp);
+        Assert(temp);
         temp = hwnd;
         gl_hwnd = temp;
         auto tempdc = GetDC(temp);
-        assert(tempdc);
+        Assert(tempdc);
         PIXELFORMATDESCRIPTOR pfd = {};
         pfd.nSize = sizeof(pfd);
         pfd.nVersion = 1;
@@ -152,20 +147,20 @@ int main() {
         pfd.iPixelType = PFD_TYPE_RGBA;
         pfd.iLayerType = PFD_MAIN_PLANE;
         int format = ChoosePixelFormat(tempdc, &pfd);
-        assert(format);
+        Assert(format);
         DescribePixelFormat(tempdc, format, sizeof(pfd), &pfd);
         BOOL set = SetPixelFormat(tempdc, format, &pfd);
-        assert(set);
+        Assert(set);
         auto temprc = wglCreateContext(tempdc);
-        assert(temprc);
+        Assert(temprc);
         BOOL make = wglMakeCurrent(tempdc, temprc);
-        assert(make);
+        Assert(make);
         int attrib0[] = {WGL_FRAMEBUFFER_SRGB_CAPABLE_ARB, 0};
         float fattrib0[] = { 0 };
         unsigned int matching = 0;
         auto wglChoosePixelFormatARB = (PFNWGLCHOOSEPIXELFORMATARBPROC)wglGetProcAddress("wglChoosePixelFormatARB");
-        assert(wglChoosePixelFormatARB);
-        assert(wglChoosePixelFormatARB(tempdc, attrib0, fattrib0, 1, &format, &matching));
+        Assert(wglChoosePixelFormatARB);
+        Assert(wglChoosePixelFormatARB(tempdc, attrib0, fattrib0, 1, &format, &matching));
         auto wglCreateContextAttribsARB = (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
         int attrib[] =
         {
@@ -173,17 +168,21 @@ int main() {
             WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB, 0,
         };
         HGLRC newrc = wglCreateContextAttribsARB(tempdc, NULL, attrib);
-        assert(newrc);
+        Assert(newrc);
         make = wglMakeCurrent(tempdc, newrc);
-        assert(make);
+        Assert(make);
         wglDeleteContext(temprc);
         temprc = newrc;
+#ifndef NDEBUG
         auto glDebugMessageCallback = (PFNGLDEBUGMESSAGECALLBACKPROC )wglGetProcAddress("glDebugMessageCallback");
         glDebugMessageCallback(DebugCallback, 0);
         glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+#endif
     }
     //initted once
+#ifndef NDEBUG
     IDXGIDebug1 *dxgi_debug = nullptr; //DEBUG
+#endif
     ID3D11Device1 *device = nullptr;
     HANDLE device_gldx = nullptr;
     ID3D11DeviceContext1 *context = nullptr;
@@ -195,11 +194,18 @@ int main() {
     ID3D11PixelShader *pixel_shader = nullptr;
     ID3D11SamplerState *sampler_state = nullptr;
     ID3D11InputLayout *vertex_layout = nullptr;
+#ifndef NDEBUG
     must_succeed(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&dxgi_debug))); //DEBUG
+#endif
     {
         ID3D11Device *base_device = nullptr;
         ID3D11DeviceContext *base_context = nullptr;
-        must_succeed(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_DEBUG, nullptr, 0, D3D11_SDK_VERSION, &base_device, nullptr, &base_context));
+#ifdef NDEBUG
+        int flags = 0;
+#else
+        int flags = D3D11_CREATE_DEVICE_DEBUG;
+#endif
+        must_succeed(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, nullptr, 0, D3D11_SDK_VERSION, &base_device, nullptr, &base_context));
         must_succeed(base_device->QueryInterface(IID_PPV_ARGS(&device)));
         must_succeed(base_context->QueryInterface(IID_PPV_ARGS(&context)));
         base_context->Release();
@@ -211,6 +217,7 @@ int main() {
         must_succeed(dxgi_device->SetMaximumFrameLatency(1));
         dxgi_device->Release();
     }
+#ifndef NDEBUG
     { //DEBUG
         ID3D11InfoQueue *info_queue = nullptr;
         must_succeed(device->QueryInterface(IID_PPV_ARGS(&info_queue)));
@@ -219,6 +226,7 @@ int main() {
         // info_queue->SetBreakOnSeverity(D3D11_MESSAGE_SEVERITY_WARNING, true);
         info_queue->Release();
     }
+#endif
     {
         IDXGIFactory2 *factory = nullptr;
         IDXGISwapChain1 *base_swapchain = nullptr;
@@ -237,7 +245,7 @@ int main() {
         //      they confer no advantage over SDL WGL's default.
         must_succeed(factory->CreateSwapChainForHwnd(device, hwnd, &desc, nullptr, nullptr, &base_swapchain));
         must_succeed(base_swapchain->QueryInterface(&swapchain));
-        assert(waitable_object = swapchain->GetFrameLatencyWaitableObject());
+        Assert(waitable_object = swapchain->GetFrameLatencyWaitableObject());
         base_swapchain->Release();
         factory->Release();
     }
@@ -274,11 +282,11 @@ VertexShaderOutput main(VertexShaderInput input) {
         ID3DBlob *vs_blob = nullptr;
         ID3DBlob *errors = nullptr;
         HRESULT compile_result = D3DCompile(vs_source, sizeof(vs_source), "gldx_vs.fx", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "vs_4_0", 0, 0, &vs_blob, &errors);
-        if (errors) print_log("D3DCompile Errors:\n%s\n", (char *)errors->GetBufferPointer());
-        assert(compile_result == S_OK && vs_blob);
+        if (errors) printf("D3DCompile Errors:\n%s\n", (char *)errors->GetBufferPointer());
+        Assert(compile_result == S_OK && vs_blob);
         void *bytecode = vs_blob->GetBufferPointer();
         size_t len = vs_blob->GetBufferSize();
-        assert(bytecode && len);
+        Assert(bytecode && len);
         must_succeed(device->CreateVertexShader(bytecode, len, nullptr, &vertex_shader));
         D3D11_INPUT_ELEMENT_DESC local_layout[] = {{"", 0, DXGI_FORMAT_R32_UINT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0}};
         must_succeed(device->CreateInputLayout(local_layout, 1, bytecode, len, &vertex_layout));
@@ -301,11 +309,11 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
         ID3DBlob *ps_blob = nullptr;
         ID3DBlob *errors = nullptr;
         HRESULT compile_result = D3DCompile(ps_source, sizeof(ps_source), "gldx_ps.fx", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_4_0", 0, 0, &ps_blob, &errors);
-        if (errors) print_log("D3DCompile Errors:\n%s\n", (char *)errors->GetBufferPointer());
-        assert(compile_result == S_OK && ps_blob);
+        if (errors) printf("D3DCompile Errors:\n%s\n", (char *)errors->GetBufferPointer());
+        Assert(compile_result == S_OK && ps_blob);
         void *bytecode = ps_blob->GetBufferPointer();
         size_t len = ps_blob->GetBufferSize();
-        assert(bytecode && len);
+        Assert(bytecode && len);
         must_succeed(device->CreatePixelShader(bytecode, len, nullptr, &pixel_shader));
         ps_blob->Release();
     }
@@ -334,21 +342,21 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
     PFNGLFRAMEBUFFERRENDERBUFFERPROC glFramebufferRenderbuffer;
     PFNGLCHECKFRAMEBUFFERSTATUSPROC glCheckFramebufferStatus;
     PFNGLBLITFRAMEBUFFERPROC glBlitFramebuffer;
-    assert(*(void**)&wglDXOpenDeviceNV         = wglGetProcAddress("wglDXOpenDeviceNV"));
-    assert(*(void**)&wglDXCloseDeviceNV        = wglGetProcAddress("wglDXCloseDeviceNV"));
-    assert(*(void**)&wglDXRegisterObjectNV     = wglGetProcAddress("wglDXRegisterObjectNV"));
-    assert(*(void**)&wglDXUnregisterObjectNV   = wglGetProcAddress("wglDXUnregisterObjectNV"));
-    assert(*(void**)&wglDXLockObjectsNV        = wglGetProcAddress("wglDXLockObjectsNV"));
-    assert(*(void**)&wglDXUnlockObjectsNV      = wglGetProcAddress("wglDXUnlockObjectsNV"));
-    assert(*(void**)&glGenFramebuffers         = wglGetProcAddress("glGenFramebuffers"));
-    assert(*(void**)&glDeleteFramebuffers      = wglGetProcAddress("glDeleteFramebuffers"));
-    assert(*(void**)&glGenRenderbuffers        = wglGetProcAddress("glGenRenderbuffers"));
-    assert(*(void**)&glDeleteRenderbuffers     = wglGetProcAddress("glDeleteRenderbuffers"));
-    assert(*(void**)&glBindFramebuffer         = wglGetProcAddress("glBindFramebuffer"));
-    assert(*(void**)&glFramebufferRenderbuffer = wglGetProcAddress("glFramebufferRenderbuffer"));
-    assert(*(void**)&glCheckFramebufferStatus  = wglGetProcAddress("glCheckFramebufferStatus"));
-    assert(*(void**)&glBlitFramebuffer         = wglGetProcAddress("glBlitFramebuffer"));
-    assert(!!(device_gldx = wglDXOpenDeviceNV(device)) & gl_success());
+    Assert(*(void**)&wglDXOpenDeviceNV         = wglGetProcAddress("wglDXOpenDeviceNV"));
+    Assert(*(void**)&wglDXCloseDeviceNV        = wglGetProcAddress("wglDXCloseDeviceNV"));
+    Assert(*(void**)&wglDXRegisterObjectNV     = wglGetProcAddress("wglDXRegisterObjectNV"));
+    Assert(*(void**)&wglDXUnregisterObjectNV   = wglGetProcAddress("wglDXUnregisterObjectNV"));
+    Assert(*(void**)&wglDXLockObjectsNV        = wglGetProcAddress("wglDXLockObjectsNV"));
+    Assert(*(void**)&wglDXUnlockObjectsNV      = wglGetProcAddress("wglDXUnlockObjectsNV"));
+    Assert(*(void**)&glGenFramebuffers         = wglGetProcAddress("glGenFramebuffers"));
+    Assert(*(void**)&glDeleteFramebuffers      = wglGetProcAddress("glDeleteFramebuffers"));
+    Assert(*(void**)&glGenRenderbuffers        = wglGetProcAddress("glGenRenderbuffers"));
+    Assert(*(void**)&glDeleteRenderbuffers     = wglGetProcAddress("glDeleteRenderbuffers"));
+    Assert(*(void**)&glBindFramebuffer         = wglGetProcAddress("glBindFramebuffer"));
+    Assert(*(void**)&glFramebufferRenderbuffer = wglGetProcAddress("glFramebufferRenderbuffer"));
+    Assert(*(void**)&glCheckFramebufferStatus  = wglGetProcAddress("glCheckFramebufferStatus"));
+    Assert(*(void**)&glBlitFramebuffer         = wglGetProcAddress("glBlitFramebuffer"));
+    Assert(!!(device_gldx = wglDXOpenDeviceNV(device)) & gl_success());
     //reinitted every resize
     ID3D11RenderTargetView *rtv = nullptr;
     ID3D11Texture2D *staging_color_renderbuffer = nullptr;
@@ -363,65 +371,44 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
     bool vsync = true;
     bool epilepsy = false;
     WINDOWPLACEMENT previous_window_placement = {sizeof(previous_window_placement)};
-    double last_frame_time_on_cpu = 0;
-    double last_frame_time_slept = 0;
     for (;;) {
-        double frame_start = get_time();
         {
-            print_log("Waiting on frame latency waitable object...\n");
+            // printf("Waiting on frame latency waitable object...\n");
             DWORD wait_result = WaitForSingleObjectEx(waitable_object, 1000, true);
             if (wait_result == WAIT_FAILED) {
-                print_log("WARNING: Waiting on the swapchain failed!!!\n");
-                assert(false); // what do we do?
+                printf("WARNING: Waiting on the swapchain failed!!!\n");
+                Assert(false); // what do we do?
             } else if (wait_result == WAIT_TIMEOUT) {
-                print_log("WARNING: Waiting on the swapchain exceeded 1 second!!!\n");
+                printf("WARNING: Waiting on the swapchain exceeded 1 second!!!\n");
             } else {
-                assert(wait_result == WAIT_OBJECT_0);
+                Assert(wait_result == WAIT_OBJECT_0);
             }
         }
-        //assert();
-        print_log("\n===== START OF FRAME %d =====\n", frame_count);
+        // printf("\n===== START OF FRAME %d =====\n", frame_count);
         if (vsync) {
             DXGI_FRAME_STATISTICS stats = {};
             HRESULT gfs_result = swapchain->GetFrameStatistics(&stats);
-            if (gfs_result == DXGI_ERROR_FRAME_STATISTICS_DISJOINT) {
-                // what do we do?
-                int k = 0;
-                last_frame_time_slept = 0;
-            } else {
-                assert(gfs_result == S_OK);
-                print_log("========== Frame Statistics =============\n"
-                          "    PresentCount:            %08u\n"
-                          "    PresentRefreshCount:     %08u\n"
-                          "    SyncRefreshCount:        %08u\n"
-                          "    SyncQPCTime:             %08llu\n",
-                          stats.PresentCount, stats.PresentRefreshCount, stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart);
+            if (gfs_result != DXGI_ERROR_FRAME_STATISTICS_DISJOINT) {
+                Assert(gfs_result == S_OK);
+                // printf("========== Frame Statistics =============\n"
+                //           "    PresentCount:            %08u\n"
+                //           "    PresentRefreshCount:     %08u\n"
+                //           "    SyncRefreshCount:        %08u\n"
+                //           "    SyncQPCTime:             %08llu\n",
+                //           stats.PresentCount, stats.PresentRefreshCount, stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart);
+                // SyncQPCTime increments while the computer is asleep, but SyncRefreshCount doesn't.
+                // If you use those values to compute refresh rate, you should subtract off some base number
+                // off SyncRefreshCount and SyncQPCTime based on the start of the program.
+                // And you have to refresh that base number every time the computer wakes up from boot!
+                LARGE_INTEGER li = {};
+                QueryPerformanceFrequency(&li);
+                double invfreq = 1.0 / li.QuadPart;
                 double secondsOfLastSync = stats.SyncQPCTime.QuadPart * invfreq;
                 double preciseRefreshInterval = secondsOfLastSync / stats.SyncRefreshCount;
-                print_log("\n    Refresh rate must be %f Hz then\n", 1 / preciseRefreshInterval);
-                print_log("=========================================\n");
-                // print_log("Frame %d took %f ms\n", frame_count, frame_time_minus_swap * 1000);
-                double nextSync = secondsOfLastSync + preciseRefreshInterval;
-                double beforeSleep = get_time();
-                double timeUntilSync = nextSync - beforeSleep;
-                double timeToDoOneFrameOnCPU = last_frame_time_on_cpu; // @Temporary! Pessimistically filter the last N frame times.
-                double timeToRenderSceneBufferOnGPU = 0.003f; // @Temporary! Use glQuery(GL_TIMESTAMP) for this, I think.
-                double timeToTranscodeOnGPU = 0.003f; // @Temporary! Use some sort of DX timestamps for this.
-                double slop = 0.003; // Semi-@Hack? @Inexplicable?
-                double timeToSleep = (timeUntilSync - timeToDoOneFrameOnCPU - timeToRenderSceneBufferOnGPU - timeToTranscodeOnGPU) - slop;
-                assert(timeToSleep < timeUntilSync);
-                int sleepMs = (int)(timeToSleep * 1000);
-                if (sleepMs > 0) {
-                    Sleep((DWORD)sleepMs);
-                    last_frame_time_slept = get_time() - beforeSleep;
-                }
-                // print_log("Last frame CPU time: %f ms\n", timeToDoOneFrameOnCPU * 1000);
-                // print_log("Last frame GPU time: %f ms\n", (timeToRenderSceneBufferOnGPU + timeToTranscodeOnGPU) * 1000);
-                // print_log("Throttled for %f ms to reduce latency\n", timeToSleep * 1000);
+                // printf("\n    Refresh rate must be %f Hz then\n", 1 / preciseRefreshInterval);
+                // printf("=========================================\n");
             }
         }
-        
-        double frame_start_after_swap_and_sleep = get_time();
         
         bool quit = false;
         bool screenshot = false;
@@ -436,14 +423,14 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
                     fullscreen = !fullscreen;
                     if (fullscreen) {
                         MONITORINFO mi = {sizeof(mi)};
-                        assert(GetWindowPlacement(hwnd, &previous_window_placement));
-                        assert(GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi));
-                        assert(SetWindowLongA(hwnd, GWL_STYLE, WS_VISIBLE));
-                        assert(SetWindowPos(hwnd, HWND_NOTOPMOST, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED));
+                        Assert(GetWindowPlacement(hwnd, &previous_window_placement));
+                        Assert(GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi));
+                        Assert(SetWindowLongA(hwnd, GWL_STYLE, WS_VISIBLE));
+                        Assert(SetWindowPos(hwnd, HWND_NOTOPMOST, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED));
                     } else {
-                        assert(SetWindowLongA(hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW));
-                        assert(SetWindowPlacement(hwnd, &previous_window_placement));
-                        assert(SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED));
+                        Assert(SetWindowLongA(hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW));
+                        Assert(SetWindowPlacement(hwnd, &previous_window_placement));
+                        Assert(SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED));
                     }
                 } else if (msg.wParam == 'V') {
                     vsync ^= 1;
@@ -465,25 +452,27 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
             resize = false;
             if (rtv) {
                 glFinish();
-                assert(device_gldx && staging_color_renderbuffer_gldx);
-                assert(wglDXUnregisterObjectNV(device_gldx, staging_color_renderbuffer_gldx) & gl_success());
-                glDeleteFramebuffers(1, &staging_framebuffer_gl); assert(gl_success());
-                glDeleteRenderbuffers(1, &staging_color_renderbuffer_gl); assert(gl_success());
+                Assert(device_gldx && staging_color_renderbuffer_gldx);
+                Assert(wglDXUnregisterObjectNV(device_gldx, staging_color_renderbuffer_gldx) & gl_success());
+                glDeleteFramebuffers(1, &staging_framebuffer_gl); Assert(gl_success());
+                glDeleteRenderbuffers(1, &staging_color_renderbuffer_gl); Assert(gl_success());
                 staging_color_renderbuffer_view->Release();
                 staging_color_renderbuffer->Release();
                 rtv->Release();
+#ifndef NDEBUG
                 must_succeed(dxgi_debug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_ALL));
+#endif
             }
             must_succeed(swapchain->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, desc.Flags));
             must_succeed(swapchain->GetDesc1(&desc)); //call AFTER ResizeBuffers to get the right W+H!!
             //NOTE: if you use a separate fake-window for getting GL, then you need to do this to make GL's FBO resize!!!!!
             if (gl_hwnd != hwnd) {
                 RECT rect = {};
-                assert(GetWindowRect(hwnd, &rect));
+                Assert(GetWindowRect(hwnd, &rect));
                 LONG style = GetWindowLongA(hwnd, GWL_STYLE);
-                assert(style);
-                assert(SetWindowLongA(gl_hwnd, GWL_STYLE, style & ~WS_VISIBLE));
-                assert(SetWindowPos(gl_hwnd, nullptr, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_NOZORDER | SWP_HIDEWINDOW | SWP_FRAMECHANGED));
+                Assert(style);
+                Assert(SetWindowLongA(gl_hwnd, GWL_STYLE, style & ~WS_VISIBLE));
+                Assert(SetWindowPos(gl_hwnd, nullptr, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW | SWP_NOZORDER | SWP_HIDEWINDOW | SWP_FRAMECHANGED));
             }
             {
                 ID3D11Texture2D *rtv_texture = nullptr;
@@ -501,9 +490,9 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
                 staging_color_renderbuffer_desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
                 must_succeed(device->CreateTexture2D(&staging_color_renderbuffer_desc, nullptr, &staging_color_renderbuffer));
                 must_succeed(device->CreateShaderResourceView(staging_color_renderbuffer, nullptr, &staging_color_renderbuffer_view));
-                glGenRenderbuffers(1, &staging_color_renderbuffer_gl); assert(gl_success());
-                glGenFramebuffers(1, &staging_framebuffer_gl); assert(gl_success());
-                assert(!!(staging_color_renderbuffer_gldx = wglDXRegisterObjectNV(device_gldx, staging_color_renderbuffer, staging_color_renderbuffer_gl, GL_RENDERBUFFER, WGL_ACCESS_WRITE_DISCARD_NV)) & gl_success());
+                glGenRenderbuffers(1, &staging_color_renderbuffer_gl); Assert(gl_success());
+                glGenFramebuffers(1, &staging_framebuffer_gl); Assert(gl_success());
+                Assert(!!(staging_color_renderbuffer_gldx = wglDXRegisterObjectNV(device_gldx, staging_color_renderbuffer, staging_color_renderbuffer_gl, GL_RENDERBUFFER, WGL_ACCESS_WRITE_DISCARD_NV)) & gl_success());
                 rtv_texture->Release();
             }
             context->ClearState();
@@ -526,9 +515,9 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
             context->PSSetShader(pixel_shader, nullptr, 0);
             context->PSSetSamplers(0, 1, &sampler_state);
             // // DEBUG: i think all the more involved extra stuff are guaranteed zeroed via ClearState();
-            // { ID3D11RasterizerState *rs{}; context->RSGetState(&rs); assert(!rs); }
-            // { UINT n{}; context->RSGetScissorRects(&n, nullptr); assert(!n); }
-            // { ID3D11DepthStencilState *dss{}; context->OMGetDepthStencilState(&dss, nullptr); assert(!dss); }
+            // { ID3D11RasterizerState *rs{}; context->RSGetState(&rs); Assert(!rs); }
+            // { UINT n{}; context->RSGetScissorRects(&n, nullptr); Assert(!n); }
+            // { ID3D11DepthStencilState *dss{}; context->OMGetDepthStencilState(&dss, nullptr); Assert(!dss); }
         }
 
         glViewport(0, 0, desc.Width, desc.Height);
@@ -538,9 +527,9 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
             {
                 POINT cursor_pos = {};
                 RECT cr = {};
-                assert(GetCursorPos(&cursor_pos));
-                assert(GetClientRect(hwnd, &cr));
-                assert(ScreenToClient(hwnd, &cursor_pos));
+                Assert(GetCursorPos(&cursor_pos));
+                Assert(GetClientRect(hwnd, &cr));
+                Assert(ScreenToClient(hwnd, &cursor_pos));
                 mouse_x = cursor_pos.x / ((float)cr.right - cr.left);
                 mouse_y = cursor_pos.y / ((float)cr.bottom - cr.top);
                 mouse_x = (mouse_x * 2) - 1;
@@ -564,23 +553,23 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
             // GL CALLS END HERE
         }
         if (screenshot) { //DEBUG
-            print_log("Screenshot!\n");
+            printf("Screenshot!\n");
             char *src = (char *)malloc(desc.Width * desc.Height * sizeof(unsigned));
-            assert(src);
-            glReadPixels(0, 0, desc.Width, desc.Height, GL_RGBA, GL_UNSIGNED_BYTE, src); assert(gl_success());
+            Assert(src);
+            glReadPixels(0, 0, desc.Width, desc.Height, GL_RGBA, GL_UNSIGNED_BYTE, src); Assert(gl_success());
             rgba_to_clipboard((unsigned *)src, desc.Width, desc.Height);
             free(src);
         }
         { // Blit the normal GL framebuffer to the DX-shared staging framebuffer as a color renderbuffer
-            assert(wglDXLockObjectsNV(device_gldx, 1, &staging_color_renderbuffer_gldx) & gl_success());
+            Assert(wglDXLockObjectsNV(device_gldx, 1, &staging_color_renderbuffer_gldx) & gl_success());
             GLint prev_framebuffer = 0;
-            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_framebuffer); assert(gl_success());
-            print_log("Previous framebuffer was %d\n", prev_framebuffer);
-            glBindFramebuffer(GL_FRAMEBUFFER, staging_framebuffer_gl); assert(gl_success());
-            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, staging_color_renderbuffer_gl); assert(gl_success());
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0); assert(gl_success());
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, staging_framebuffer_gl); assert(gl_success());
-            GLenum framebufferStatus = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER); assert(gl_success());
+            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_framebuffer); Assert(gl_success());
+            // printf("Previous framebuffer was %d\n", prev_framebuffer);
+            glBindFramebuffer(GL_FRAMEBUFFER, staging_framebuffer_gl); Assert(gl_success());
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, staging_color_renderbuffer_gl); Assert(gl_success());
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0); Assert(gl_success());
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, staging_framebuffer_gl); Assert(gl_success());
+            GLenum framebufferStatus = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER); Assert(gl_success());
             if (framebufferStatus != GL_FRAMEBUFFER_COMPLETE) {
                 const char *msg = "";
                 switch (framebufferStatus) {
@@ -592,38 +581,41 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
                 case GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE:        msg = "GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE";        break;
                 case GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS:      msg = "GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS";      break;
                 }
-                print_log("Framebuffer incomplete! It was %s\n", msg);
+                printf("Framebuffer incomplete! It was %s\n", msg);
             }
             glBlitFramebuffer(0, 0, desc.Width, desc.Height,
-                              0, 0, desc.Width, desc.Height, GL_COLOR_BUFFER_BIT, GL_NEAREST); assert(gl_success());
-            glBindFramebuffer(GL_FRAMEBUFFER, prev_framebuffer); assert(gl_success());
+                              0, 0, desc.Width, desc.Height, GL_COLOR_BUFFER_BIT, GL_NEAREST); Assert(gl_success());
+            glBindFramebuffer(GL_FRAMEBUFFER, prev_framebuffer); Assert(gl_success());
             glFlush();
-            assert(wglDXUnlockObjectsNV(device_gldx, 1, &staging_color_renderbuffer_gldx) & gl_success());
+            Assert(wglDXUnlockObjectsNV(device_gldx, 1, &staging_color_renderbuffer_gldx) & gl_success());
         }
         context->OMSetRenderTargets(1, &rtv, nullptr);
         context->Draw(4, 0);
         context->Flush();
         {
-            HRESULT present_result = swapchain->Present(vsync, !vsync? DXGI_PRESENT_ALLOW_TEARING : 0);
-            if (present_result == DXGI_STATUS_MODE_CHANGED) resize = true; else assert(present_result == S_OK);
-            last_frame_time_on_cpu = get_time() - frame_start_after_swap_and_sleep;
+            // You kind of always want a swap interval of 0, but without any user sleep throttling,
+            // the framerate gets unbounded when you are in Flip mode rather than Independent Flip
+            // (i.e., when your window needs to get composed). So be aware of that...!
+            HRESULT present_result = swapchain->Present(0, !vsync? DXGI_PRESENT_ALLOW_TEARING : 0);
+            if (present_result == DXGI_STATUS_MODE_CHANGED) resize = true;
+            else Assert(present_result == S_OK || present_result == DXGI_STATUS_OCCLUDED);
         }
-        double frame_time = get_time() - frame_start;
-        print_log("\n  Frame %d took %f ms (%f ms slept, then %f ms on CPU, then %f swap)\n", frame_count, frame_time * 1000, last_frame_time_slept * 1000, last_frame_time_on_cpu * 1000, (frame_time - last_frame_time_on_cpu - last_frame_time_slept) * 1000);
-        print_log("\n===== END OF FRAME %d =====\n", frame_count);
+        // printf("\n===== END OF FRAME %d =====\n", frame_count);
         frame_count++;
     }
     
     if (rtv) { // @Duplicate
         glFinish();
-        assert(device_gldx && staging_color_renderbuffer_gldx);
-        assert(wglDXUnregisterObjectNV(device_gldx, staging_color_renderbuffer_gldx) & gl_success());
-        glDeleteFramebuffers(1, &staging_framebuffer_gl); assert(gl_success());
-        glDeleteRenderbuffers(1, &staging_color_renderbuffer_gl); assert(gl_success());
+        Assert(device_gldx && staging_color_renderbuffer_gldx);
+        Assert(wglDXUnregisterObjectNV(device_gldx, staging_color_renderbuffer_gldx) & gl_success());
+        glDeleteFramebuffers(1, &staging_framebuffer_gl); Assert(gl_success());
+        glDeleteRenderbuffers(1, &staging_color_renderbuffer_gl); Assert(gl_success());
         staging_color_renderbuffer_view->Release();
         staging_color_renderbuffer->Release();
         rtv->Release();
+#ifndef NDEBUG
         must_succeed(dxgi_debug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_ALL));
+#endif
     }
     vertex_layout->Release();
     sampler_state->Release();
@@ -633,10 +625,14 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
     CloseHandle(waitable_object);
     swapchain    ->Release();
     context      ->Release();
-    assert(!!wglDXCloseDeviceNV(device_gldx) & gl_success());
+    Assert(!!wglDXCloseDeviceNV(device_gldx) & gl_success());
     device       ->Release();
+#ifndef NDEBUG
     dxgi_debug   ->Release(); //DEBUG
+#endif
     
 
     return 0;
 }
+INT WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
+    PSTR lpCmdLine, INT nCmdShow) { return main(); }
