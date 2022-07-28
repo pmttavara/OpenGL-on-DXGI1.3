@@ -3,7 +3,7 @@
 
 **TLDR: The main code file example for the project is in test.cpp. Download and build the Visual Studio project file.**
 
-**Last updated June 2022**
+**Last updated July 2022**
 
 This is a minimum-viable-product proof of concept program for drawing to an OpenGL rendering context, but presenting via a new DXGI 1.3 frame latency waitable swap chain. This confers the latency and control advantages of those swapchains without requiring a developer to port their entire renderer from OpenGL to DirectX. In theory, this would also allow a developer to gradually transition their program from OpenGL to DirectX in steps, with the two APIs working together in the interim.
 
@@ -18,6 +18,7 @@ This incurs 2 copies of overhead. Also, it is basically triple/quadruple bufferi
 Thoroughly tested on Nvidia cards, and appears to work on AMD cards tested, but I think you might see blocking incurred on the first GL call(s) of the frame rather than at swap-time. I'll update when I have more info, but always test things yourself.
 
 `test.cpp` is the actual file that does everything. It was written trying to be pretty simple, but I think it's not a simple task, so be warned.
+It also contains a sprinkling of comments that go further into the weeds on some of the behaviour and how it affects frame pacing.
 
 If you're wondering how to set up your basic frame pacing, then I think this is what you want, based on my testing with Nvidia (can't say for other vendors -- seems like things are complicated everywhere).
 - `DXGI_SWAP_EFFECT_FLIP_DISCARD`.
@@ -25,6 +26,7 @@ If you're wondering how to set up your basic frame pacing, then I think this is 
 - In Independent Flip mode: Swap interval of 0 in `Present()`, always (if you want vsync-off-style stuff then pass `ALLOW_TEARING` in flags and still do wait on the waitable object) -- otherwise i'm pretty sure you'll ratchet down to permanently be another extra frame latent if you miss your frame budget once, but someone please correct me if that's wrong
 - In Flip mode: You want user sleep throttling if you present with a swap interval of 0. Otherwise, present with a swap interval of 1.
 - `SetMaximumFrameLatency(2)` if you want to give people some slack, `SetMaximumFrameLatency(1)` otherwise -- my understanding from my testing is that DXGI will do automatic step-down and step-up of latency for you based on how quickly you can present new frames (as long as you have SwapInterval=0), but someone please correct me if that's wrong
+- When vsync is enabled, you *may* want to call `DwmFlush()` before `WaitForSingleObjectEx`, but be *very* measured about that decision. (Read test.cpp for why.)
 
 As an aside, it seems that `DXGI_FRAME_STATISTICS` and `DWM_TIMING_INFO` are broken on the non-primary display. DWM apparently can't even compose at the refresh rate of the secondary display(s).
 

@@ -19,6 +19,9 @@
 #include <d3dcompiler.h>
 #pragma comment(lib, "d3dcompiler.lib")
 
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
+
 #include "glext.h"
 #include "wglext.h"
 
@@ -34,11 +37,35 @@ extern "C" {
 #include <math.h> // @Remove
 
 bool resize = false;
+bool alt_enter = false;
+HWND stats = nullptr;
 static LRESULT CALLBACK WindowProc(HWND window, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
+    case WM_SIZING:
+        if (window == stats) {
+            RECT &r = *(RECT *)lparam;
+            // This is kind of a huge hack, but it's simpler than figuring out how to efficiently
+            // render text to the dxgi surface :)
+            if (r.bottom > r.top) {
+                r.bottom = r.top;
+            }
+            return TRUE;
+        }
+        break;
+    case WM_SYSKEYDOWN:
+        if ((wparam & 0xffff) == VK_RETURN && ((lparam >> 29) & 1) == 1) {
+            alt_enter = true;
+            return 0;
+        }
+        // TODO(Phillip): I need to investigate why alt-enter is beeping.
+        //                Seemingly MakeWindowAssociation() is not working on
+        //                the swapchain, since it's outputting a debug string
+        //                complaining that it can't SetFullscreenState on the
+        //                frame latency waitable swapchain. :AltEnterBeep
+        break;
     case WM_SIZE:
         resize = true;
         return 0;
@@ -118,7 +145,61 @@ static void rgba_to_clipboard(void *data, int w, int h) {
     CloseClipboard();
 }
 
+static double get_time() {
+    static double invfreq;
+    LARGE_INTEGER li = {};
+    if (!invfreq) {
+        Assert(QueryPerformanceFrequency(&li));
+        invfreq = 1.0 / li.QuadPart;
+    }
+    Assert(QueryPerformanceCounter(&li));
+    return li.QuadPart * invfreq;
+}
+
+static bool setup_process_dpi_awareness() {
+    bool             result                 = false;
+    HINSTANCE        user32                 = LoadLibraryA("User32.dll");
+    HINSTANCE        shcore                 = LoadLibraryA("Shcore.dll");
+    BOOL    (WINAPI *spdac     )(long long) = NULL;
+    HRESULT (WINAPI *spda      )(      int) = NULL;
+    if (user32)           { spdac = (BOOL    (WINAPI *)(long long))GetProcAddress(user32, "SetProcessDpiAwarenessContext"); }
+    if (shcore)           { spda  = (HRESULT (WINAPI *)(      int))GetProcAddress(shcore, "SetProcessDpiAwareness"       ); }
+    if (!result && spdac) { result = spdac(-4) == TRUE   ; } // SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+    if (!result && spdac) { result = spdac(-3) == TRUE   ; } // SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE)
+    if (!result && spdac) { result = spdac(-2) == TRUE   ; } // SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE)
+    if (!result && spda ) { result = spda (+2) == S_OK   ; } // SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
+    if (!result && spda ) { result = spda (+1) == S_OK   ; } // SetProcessDpiAwareness(PROCESS_SYSTEM_AWARE)
+    if (!result)          { result = SetProcessDPIAware(); }
+    if (user32)           { FreeLibrary(user32); }
+    if (shcore)           { FreeLibrary(shcore); }
+    return result;
+}
+
+static void update_stats(bool vsync, bool epilepsy, float dt, float frame_latency) {
+    char title[512];
+    int n = snprintf(title,
+        sizeof(title),
+        "%.0f FPS (%.1f ms) | >=%.0f frame latency | %s (press V) | [EPILEPSY WARNING] %s (press E) | F11 for fullscreen",
+        1.0f / dt,
+        dt * 1000,
+        frame_latency,
+        vsync ? "Vsync" : "No vsync",
+        epilepsy ? "Flicker" : "No flicker");
+    Assert(n);
+    Assert(stats);
+    SetWindowTextA(stats, title);
+}
+
 int main() {
+
+    setup_process_dpi_awareness();
+
+    unsigned int frame_count = 0;
+    bool fullscreen = false;
+    bool vsync = true;
+    bool epilepsy = false;
+    WINDOWPLACEMENT previous_window_placement = {sizeof(previous_window_placement)};
+
     WNDCLASSA wc = {};
     wc.lpfnWndProc = WindowProc;
     wc.lpszClassName = "DXGL";
@@ -127,18 +208,30 @@ int main() {
     ATOM atom = RegisterClassA(&wc);
     Assert(atom);
 
-    HWND hwnd = CreateWindowA(wc.lpszClassName, "DXGL",
+    HWND hwnd = CreateWindowA(wc.lpszClassName, "OpenGL on DXGI 1.3 - https://github.com/pmttavara/OpenGL-on-DXGI1.3",
         WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
         640, 480, nullptr, nullptr, nullptr, nullptr);
+
+    stats = CreateWindowA(wc.lpszClassName, "",
+        (WS_OVERLAPPEDWINDOW | WS_VISIBLE) & ~WS_MAXIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT,
+        800, 0, nullptr, nullptr, nullptr, nullptr);
+
+    update_stats(vsync, epilepsy, 0, 0);
+
     HWND gl_hwnd = nullptr;
     {
-        auto temp = CreateWindowA("STATIC", "temp", 0,
-            CW_USEDEFAULT, CW_USEDEFAULT, 640/2, 480/2,
+#if 0
+        // Use a separate window for establishing GL context. This
+        // seems to break for some uninvestigated reason if you
+        // minimize and then restore the main window. Strange!
+        gl_hwnd = CreateWindowA("STATIC", "temp", 0,
+            CW_USEDEFAULT, CW_USEDEFAULT, 1, 1,
             nullptr, nullptr, nullptr, nullptr);
-        Assert(temp);
-        temp = hwnd;
-        gl_hwnd = temp;
-        auto tempdc = GetDC(temp);
+#else
+        gl_hwnd = hwnd;
+#endif
+        Assert(gl_hwnd);
+        auto tempdc = GetDC(gl_hwnd);
         Assert(tempdc);
         PIXELFORMATDESCRIPTOR pfd = {};
         pfd.nSize = sizeof(pfd);
@@ -238,12 +331,18 @@ int main() {
         desc.Scaling = DXGI_SCALING_NONE;
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-        must_succeed(CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, IID_IDXGIFactory2, (void**)&factory));
-        must_succeed(factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_PRINT_SCREEN | DXGI_MWA_NO_WINDOW_CHANGES));
-        //NOTE: if we fail to create the swap chain, do NOT
-        //      fall back to older presentation models, since
-        //      they confer no advantage over SDL WGL's default.
+        UINT create_dxgi_factory_flags = 0;
+#ifndef NDEBUG
+        { //DEBUG
+            create_dxgi_factory_flags |= DXGI_CREATE_FACTORY_DEBUG;
+        }
+#endif
+        must_succeed(CreateDXGIFactory2(create_dxgi_factory_flags, IID_IDXGIFactory2, (void**)&factory));
+        //NOTE: if you fail to create the swap chain, you likely don't
+        //      want to fall back to older presentation models, since AFAICT
+        //      they confer no latency advantages over WGL's legacy swapchain.
         must_succeed(factory->CreateSwapChainForHwnd(device, hwnd, &desc, nullptr, nullptr, &base_swapchain));
+        must_succeed(factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER | DXGI_MWA_NO_PRINT_SCREEN | DXGI_MWA_NO_WINDOW_CHANGES)); // :AltEnterBeep
         must_succeed(base_swapchain->QueryInterface(&swapchain));
         Assert(waitable_object = swapchain->GetFrameLatencyWaitableObject());
         base_swapchain->Release();
@@ -366,12 +465,22 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
     GLuint staging_framebuffer_gl = 0;
 
     resize = true;
-    unsigned int frame_count = 0;
-    bool fullscreen = false;
-    bool vsync = true;
-    bool epilepsy = false;
-    WINDOWPLACEMENT previous_window_placement = {sizeof(previous_window_placement)};
+    double prev = get_time();
     for (;;) {
+        // In Flip composition mode, the waitable object won't wait
+        // for VBlank, so framerates get unbounded, even in vsync!
+        // Calling DwmFlush() forces a wait for VBlank, which "solves"
+        // the problem (in a terrible, hacky sort of sense).
+        // I suspect this may break multimonitor setups with
+        // discrepant refresh rates, but test for yourself.
+        // I think DwmFlush() might obviate the point of waitable objects,
+        // so maybe gate it to windowed-only (where you care less about
+        // careful frame pacing). On a 1080p 60Hz monitor, PresentMon
+        // did not report a change in latency when calling DwmFlush()
+        // here, but again, test for yourself!
+        if (vsync && frame_count > 0) {
+            DwmFlush();
+        }
         {
             // printf("Waiting on frame latency waitable object...\n");
             DWORD wait_result = WaitForSingleObjectEx(waitable_object, 1000, true);
@@ -385,31 +494,29 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
             }
         }
         // printf("\n===== START OF FRAME %d =====\n", frame_count);
+        float frame_latency = 0;
         if (vsync) {
             DXGI_FRAME_STATISTICS stats = {};
             HRESULT gfs_result = swapchain->GetFrameStatistics(&stats);
             if (gfs_result != DXGI_ERROR_FRAME_STATISTICS_DISJOINT) {
                 Assert(gfs_result == S_OK);
-                // printf("========== Frame Statistics =============\n"
-                //           "    PresentCount:            %08u\n"
-                //           "    PresentRefreshCount:     %08u\n"
-                //           "    SyncRefreshCount:        %08u\n"
-                //           "    SyncQPCTime:             %08llu\n",
-                //           stats.PresentCount, stats.PresentRefreshCount, stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart);
                 // SyncQPCTime increments while the computer is asleep, but SyncRefreshCount doesn't.
                 // If you use those values to compute refresh rate, you should subtract off some base number
                 // off SyncRefreshCount and SyncQPCTime based on the start of the program.
                 // And you have to refresh that base number every time the computer wakes up from boot!
-                LARGE_INTEGER li = {};
-                QueryPerformanceFrequency(&li);
-                double invfreq = 1.0 / li.QuadPart;
-                double secondsOfLastSync = stats.SyncQPCTime.QuadPart * invfreq;
-                double preciseRefreshInterval = secondsOfLastSync / stats.SyncRefreshCount;
-                // printf("\n    Refresh rate must be %f Hz then\n", 1 / preciseRefreshInterval);
-                // printf("=========================================\n");
+                DWM_TIMING_INFO timing = {sizeof(timing)};
+                if (DwmGetCompositionTimingInfo(nullptr, &timing) == S_OK) {
+                    if (stats.SyncQPCTime.QuadPart && stats.SyncRefreshCount) {
+                        signed long long syncDelay = timing.qpcVBlank - stats.SyncQPCTime.QuadPart;
+                        frame_latency = (float)(syncDelay / (double)timing.qpcRefreshPeriod);
+                    }
+                }
             }
         }
-        
+        double next = get_time();
+        float dt = (float)(next - prev);
+        prev = next;
+
         bool quit = false;
         bool screenshot = false;
         MSG msg;
@@ -419,19 +526,7 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
                 break;
             } else if (msg.message == WM_KEYDOWN) {
                 if (msg.wParam == VK_F11) {
-                    resize = true;
-                    fullscreen = !fullscreen;
-                    if (fullscreen) {
-                        MONITORINFO mi = {sizeof(mi)};
-                        Assert(GetWindowPlacement(hwnd, &previous_window_placement));
-                        Assert(GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi));
-                        Assert(SetWindowLongA(hwnd, GWL_STYLE, WS_VISIBLE));
-                        Assert(SetWindowPos(hwnd, HWND_NOTOPMOST, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED));
-                    } else {
-                        Assert(SetWindowLongA(hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW));
-                        Assert(SetWindowPlacement(hwnd, &previous_window_placement));
-                        Assert(SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED));
-                    }
+                    alt_enter = true;
                 } else if (msg.wParam == 'V') {
                     vsync ^= 1;
                 } else if (msg.wParam == 'E') {
@@ -444,6 +539,23 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
             DispatchMessageA(&msg);
         }
         if (quit) break;
+
+        if (alt_enter) {
+            alt_enter = false;
+            resize = true;
+            fullscreen = !fullscreen;
+            if (fullscreen) {
+                MONITORINFO mi = {sizeof(mi)};
+                Assert(GetWindowPlacement(hwnd, &previous_window_placement));
+                Assert(GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi));
+                Assert(SetWindowLongA(hwnd, GWL_STYLE, WS_VISIBLE));
+                Assert(SetWindowPos(hwnd, HWND_NOTOPMOST, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED));
+            } else {
+                Assert(SetWindowLongA(hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW));
+                Assert(SetWindowPlacement(hwnd, &previous_window_placement));
+                Assert(SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED));
+            }
+        }
 
         // Update game sim: let's fake some work
         // Sleep((DWORD)((sin(get_time())*.5+.5) * 6));
@@ -537,10 +649,21 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
             }
             // GL CALLS START HERE
             glEnable(GL_FRAMEBUFFER_SRGB);
-            glClearColor(0, 0, 0, 1);
-            static int counter; if (epilepsy) counter++;
-            glClearColor(0.2f * !(counter & 1), 0.2f * (counter & 1), 0, 1);
-            if (GetKeyState(VK_LBUTTON) < 0 || GetKeyState('K') < 0) glClearColor(1, 1, 1, 1);
+            float r = 0, g = 0, b = 0;
+            if (GetKeyState(VK_LBUTTON) < 0 || GetKeyState('K') < 0) {
+                if (epilepsy) {
+                    r = 0.2f * !(frame_count & 1);
+                    g = 0.2f *  (frame_count & 1);
+                } else {
+                    r = 0.02f;
+                    g = 0.02f;
+                    b = 0.02f;
+                }
+            } else if (epilepsy) {
+                r = 0.1f * !(frame_count & 1);
+                g = 0.1f *  (frame_count & 1);
+            }
+            glClearColor(r, g, b, 1);
             glClear(GL_COLOR_BUFFER_BIT);
             glBegin(GL_TRIANGLES);
             glColor3f(1, 0, 0);
@@ -602,6 +725,9 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
         }
         // printf("\n===== END OF FRAME %d =====\n", frame_count);
         frame_count++;
+        if (frame_count % 30 == 0) {
+            update_stats(vsync, epilepsy, dt, frame_latency);
+        }
     }
     
     if (rtv) { // @Duplicate
