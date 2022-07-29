@@ -20,13 +20,16 @@ Thoroughly tested on Nvidia cards, and appears to work on AMD cards tested, but 
 `test.cpp` is the actual file that does everything. It was written trying to be pretty simple, but I think it's not a simple task, so be warned.
 It also contains a sprinkling of comments that go further into the weeds on some of the behaviour and how it affects frame pacing.
 
-If you're wondering how to set up your basic frame pacing, then I think this is what you want, based on my testing with Nvidia (can't say for other vendors -- seems like things are complicated everywhere).
-- `DXGI_SWAP_EFFECT_FLIP_DISCARD`.
-- Buffer count of 2, always (pretty sure? -- please correct me if that's wrong)
-- In Independent Flip mode: Swap interval of 0 in `Present()`, always (if you want vsync-off-style stuff then pass `ALLOW_TEARING` in flags and still do wait on the waitable object) -- otherwise i'm pretty sure you'll ratchet down to permanently be another extra frame latent if you miss your frame budget once, but someone please correct me if that's wrong
-- In Flip mode: You want user sleep throttling if you present with a swap interval of 0. Otherwise, present with a swap interval of 1.
-- `SetMaximumFrameLatency(2)` if you want to give people some slack, `SetMaximumFrameLatency(1)` otherwise -- my understanding from my testing is that DXGI will do automatic step-down and step-up of latency for you based on how quickly you can present new frames (as long as you have SwapInterval=0), but someone please correct me if that's wrong
-- When vsync is enabled, you *may* want to call `DwmFlush()` before `WaitForSingleObjectEx`, but be *very* measured about that decision. (Read test.cpp for why.)
+If you're wondering how to set up your basic frame pacing, then I think this is what you want, based on my testing with Nvidia (can't say for other vendors).
+- As per Microsoft recommendation, `DXGI_SWAP_EFFECT_FLIP_DISCARD` with a buffer count of 2, and wait on the waitable object at frame start before input processing.
+- `SetMaximumFrameLatency(1)`.
+- There's no easy way to know when you're in Independent Flip vs. Flip, so you likely want to call `Present(vsync ? 1 : 0, vsync ? 0 : ALLOW_TEARING)`.
+- If you're (somehow) sure you're in Independent Flip mode: `Present(0, vsync ? 0 : ALLOW_TEARING)`.
+- If you're (somehow) sure you're in Flip mode:
+    - Either call `Present(1)`, or
+    - `Present(0)` + `DwmFlush()` before input processing, or possibly even
+    - `Present(0)` + `WaitForVBlank()` before input processing, or
+    - `Present(0)` + user sleep throttling before input processing.
 
 As an aside, it seems that `DXGI_FRAME_STATISTICS` and `DWM_TIMING_INFO` are broken on the non-primary display. DWM apparently can't even compose at the refresh rate of the secondary display(s).
 

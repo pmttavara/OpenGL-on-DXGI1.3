@@ -467,21 +467,11 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
     resize = true;
     double prev = get_time();
     for (;;) {
-        // In Flip composition mode, the waitable object won't wait
-        // for VBlank, so framerates get unbounded, even in vsync!
-        // Calling DwmFlush() forces a wait for VBlank, which "solves"
-        // the problem (in a terrible, hacky sort of sense).
-        // I suspect this may break multimonitor setups with
-        // discrepant refresh rates, but test for yourself.
-        // I think DwmFlush() might obviate the point of waitable objects,
-        // so maybe gate it to windowed-only (where you care less about
-        // careful frame pacing). On a 1080p 60Hz monitor, PresentMon
-        // did not report a change in latency when calling DwmFlush()
-        // here, but again, test for yourself!
-        if (vsync && frame_count > 0) {
-            DwmFlush();
-        }
         {
+            // See comment before Present().
+            // if (vsync && frame_count > 0) {
+            //     DwmFlush();
+            // }
             // printf("Waiting on frame latency waitable object...\n");
             DWORD wait_result = WaitForSingleObjectEx(waitable_object, 1000, true);
             if (wait_result == WAIT_FAILED) {
@@ -715,11 +705,49 @@ float4 main(VertexShaderOutput input) : SV_TARGET {
         context->OMSetRenderTargets(1, &rtv, nullptr);
         context->Draw(4, 0);
         context->Flush();
+        // There is a question of whether you want a swap interval of 0.
+        //
+        // In Independent Flip, I think you always want a swap interval of 0 to
+        // prevent the possibility of any up-ratcheting of latency (swap
+        // interval 0 tells DXGI "this is the most recent frame, show it ASAP").
+        // I haven't figured out whether SetMaximumFrameLatency(1) is sufficient
+        // to prevent that up-ratchet. (If you have information on that then
+        // please contact me!)
+        //
+        // The disadvantage of Present(0) is that in Flip mode, the framerate
+        // becomes unbounded, so you would need user sleep throttling or to call
+        // DwmFlush()/WaitForVBlank() before waiting on the waitable object. (I
+        // don't know of a way to determine whether you are in Flip or
+        // Independent Flip without checking ETW in admin mode or using
+        // heuristics like approximating frame latency.)
+        //
+        // The thing about throttling the framerate in Flip mode (e.g. in
+        // windowed mode) is that you by design incur an extra frame of latency
+        // that you could have otherwise gotten away without in Flip mode if you
+        // can render at high framerates. You ratchet your own minimum latency
+        // up from merely 1 frame to 2. I think this should be a decision on
+        // your part as a game or application developer, and it depends on your
+        // interpretation of what the phrase "vsync on" really means. (In Flip
+        // you're always "v-synced"! Does that necessarily mean your framerate
+        // should be capped to 60 Hz?)
+        //
+        // On a 1080p 60Hz monitor with PresentMon monitoring the app, I could
+        // not identify any difference in behaviour between Present(1) and
+        // Present(0) + DwmFlush(), and I also could not identify any increased
+        // latency by calling DwmFlush() in Independent Flip. Obviously, in
+        // Flip, both Present(1) and DwmFlush() add ~1 frame of latency by
+        // successfully throttling the framerate, as expected.
+        //
+        // Generally, I would not recommend DwmFlush(), since I suspect it may
+        // wait the wrong amount on discrepant-refresh-rate multimonitor setups,
+        // and it feels like a hack in this case. (Then again, so might the
+        // waitable object!!!) DwmFlush() is extremely useful in raw OpenGL
+        // renderers, though -- call it after SwapBuffers() so your game doesn't
+        // do a spinlock-wait for vblank and peg a CPU core to 100% (thanks
+        // WGL).
+
         {
-            // You kind of always want a swap interval of 0, but without any user sleep throttling,
-            // the framerate gets unbounded when you are in Flip mode rather than Independent Flip
-            // (i.e., when your window needs to get composed). So be aware of that...!
-            HRESULT present_result = swapchain->Present(0, !vsync? DXGI_PRESENT_ALLOW_TEARING : 0);
+            HRESULT present_result = swapchain->Present(vsync, !vsync? DXGI_PRESENT_ALLOW_TEARING : 0);
             if (present_result == DXGI_STATUS_MODE_CHANGED) resize = true;
             else Assert(present_result == S_OK || present_result == DXGI_STATUS_OCCLUDED);
         }
